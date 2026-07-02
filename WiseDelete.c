@@ -354,7 +354,14 @@ void mainCRTStartup() {
     }
 
     wchar_t driverPath[MAX_PATH * 2];
-    GetCurrentDirectoryW(MAX_PATH * 2, driverPath);
+    
+    GetModuleFileNameW(NULL, driverPath, MAX_PATH * 2);
+    
+    wchar_t* p = driverPath;
+    while (*p) ++p;
+    while (p > driverPath && *p != L'\\' && *p != L'/') --p;
+    *p = L'\0';
+    
     wcscat(driverPath, L"\\WiseDelfile64.sys");
 
     DWORD driverAttrib = GetFileAttributesW(driverPath);
