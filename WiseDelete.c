@@ -10,8 +10,11 @@
 #define HANDSHAKE_MAGIC 20
 #define HANDSHAKE_STRING "WiseDelfile"
 
+typedef NTSTATUS(NTAPI* RtlAdjustPrivilege_t)(ULONG Privilege, BOOLEAN Enable, BOOLEAN CurrentThread, PBOOLEAN Enabled);
 typedef NTSTATUS(NTAPI* NtLoadDriver_t)(PUNICODE_STRING DriverServiceName);
 typedef NTSTATUS(NTAPI* NtUnloadDriver_t)(PUNICODE_STRING DriverServiceName);
+
+#define SE_LOAD_DRIVER_PRIVILEGE 10
 
 #pragma pack(push, 1)
 typedef struct {
@@ -141,26 +144,10 @@ LPWSTR NextArg(LPWSTR* cmdLine) {
 }
 
 // --------------------- Load/Unload Driver -----------------------
-BOOL EnablePrivilege(const wchar_t* privilegeName) {
-    HANDLE hToken;
-    TOKEN_PRIVILEGES tp;
-    LUID luid;
-
-    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken))
-        return FALSE;
-
-    if (!LookupPrivilegeValueW(NULL, privilegeName, &luid)) {
-        CloseHandle(hToken);
-        return FALSE;
-    }
-
-    tp.PrivilegeCount = 1;
-    tp.Privileges[0].Luid = luid;
-    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-
-    BOOL result = AdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(TOKEN_PRIVILEGES), NULL, NULL);
-    CloseHandle(hToken);
-    return result;
+BOOL EnablePrivilege(HMODULE hNtdll, ULONG privilege) {
+    RtlAdjustPrivilege_t RtlAdjustPrivilege = (RtlAdjustPrivilege_t)GetProcAddress(hNtdll, "RtlAdjustPrivilege");
+    BOOLEAN previousState;
+    return NT_SUCCESS(RtlAdjustPrivilege(privilege, TRUE, FALSE, &previousState));
 }
 
 BOOL LoadDriver(HMODULE hNtdll, const wchar_t* serviceName, const wchar_t* driverPath) {
@@ -169,7 +156,7 @@ BOOL LoadDriver(HMODULE hNtdll, const wchar_t* serviceName, const wchar_t* drive
     WCHAR ntPath[MAX_PATH * 2];
     WCHAR ntImagePath[MAX_PATH * 2];
 
-    if (!EnablePrivilege(L"SeLoadDriverPrivilege")) return FALSE;
+    if (!EnablePrivilege(hNtdll, SE_LOAD_DRIVER_PRIVILEGE)) return FALSE;
 
     wcscpy(regPath, L"SYSTEM\\CurrentControlSet\\Services\\");
     wcscat(regPath, serviceName);
